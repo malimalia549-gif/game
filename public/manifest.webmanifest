@@ -1,0 +1,16 @@
+{
+  "name": "Kebun Robin",
+  "short_name": "Kebun Robin",
+  "description": "Desa farming pixel — tanam, panen, proses, dan jual hasil.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#1A1612",
+  "theme_color": "#1A1612",
+  "icons": [
+    {
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}
