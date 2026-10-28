@@ -2511,9 +2511,10 @@ function drawFarmerAndOverlays(
   const sign = player.dir === "right" ? -1 : 1;
   const phi = player.moving ? player.walkCycle : 0;
   const idleBreath = !player.moving && Math.floor(nowMs / 520) % 2 === 1 ? -1 : 0;
-  // Calm, natural human walking vertical glide (not a running bounce!)
-  const bobY = player.moving ? Math.round(-Math.abs(Math.cos(phi)) * 1.2) : idleBreath;
-  const hairBounceY = player.moving ? Math.round(-Math.abs(Math.cos(phi - 0.55)) * 1.0) : 0;
+  // Same body bob in every direction so up/down doesn't bounce harder than left/right
+  const bobAmp = 1.2;
+  const bobY = player.moving ? Math.round(-Math.abs(Math.cos(phi)) * bobAmp) : idleBreath;
+  const hairBounceY = player.moving ? Math.round(-Math.abs(Math.cos(phi - 0.55)) * (bobAmp > 1.2 ? 1.35 : 1.0)) : 0;
 
   // Integer Pixel Buffer (45 × 64) so every limb & body part renders as razor-sharp pixel art
   const GW = 45;
@@ -2617,7 +2618,7 @@ function drawFarmerAndOverlays(
   };
 
   // Dynamic ground shadow & walking dust puffs under farmer's feet
-  const strideSpread = player.moving && isSide ? Math.abs(Math.sin(phi)) * 4.5 : 0;
+  const strideSpread = player.moving ? Math.abs(Math.sin(phi)) * (isSide ? 4.5 : 2.2) : 0;
   ctx.fillStyle = "rgba(20, 34, 10, 0.42)";
   ctx.beginPath();
   ctx.ellipse(sx, sy + 2 * zoom, (10.5 + strideSpread) * zoom, 4.2 * zoom, 0, 0, Math.PI * 2);
@@ -2627,8 +2628,8 @@ function drawFarmerAndOverlays(
     // Animated footstep dust clouds trailing behind the pushing-off foot
     const stepPulse = Math.abs(Math.sin(phi));
     if (stepPulse > 0.65) {
-      const trailX = isSide ? (player.dir === "left" ? 8 : -8) : Math.sin(phi) > 0 ? -3 : 3;
-      const trailY = player.dir === "down" ? -4 : player.dir === "up" ? 2 : 1;
+      const trailX = isSide ? (player.dir === "left" ? 8 : -8) : 0;
+      const trailY = player.dir === "down" ? -6 : player.dir === "up" ? 6 : 1;
       ctx.fillStyle = `rgba(238, 226, 198, ${(stepPulse - 0.5) * 0.95})`;
       ctx.beginPath();
       ctx.arc(sx + trailX * px, sy + trailY * px, 2.4 * px, 0, Math.PI * 2);
@@ -2919,46 +2920,84 @@ function drawFarmerAndOverlays(
     // ROUNDED TORSO, BENT-ELBOW ARM SWING, AND CLEAR KNEE-BEND STRIDE OF SIDE VIEW!
     // =========================================================================
     const isUp = player.dir === "up";
-    const swayX = player.moving ? Math.sin(phi) * 0.7 : 0;
-    const tx = Math.round(swayX);
+    // Upright chest, same height as the side view. No extra forward bend.
+    const tx = 0;
+    // Facing the camera, forward is down the sprite. Facing away, forward is up the sprite.
+    const depthSign = isUp ? -1 : 1;
 
-    // 1. Articulated Left & Right Arms with True Pendulum Wave ("melambai" via sin/cos, NOT vertical piston pumping!)
+    // Exact side-view arm pose. Front/back keeps these heights and only turns the swing to face the camera.
+    const sideArmPose = (armPhi: number, isFar: boolean) => {
+      const s = player.moving ? Math.sin(armPhi) : 0;
+      const shX = isFar ? -1.0 : 0.4;
+      const shY = -28 + bobY;
+      const thetaUpper = s * 0.72;
+      const elbowX = shX - Math.sin(thetaUpper) * 6.0;
+      const elbowY = shY + Math.cos(thetaUpper) * 6.0;
+      const thetaFore = thetaUpper + 0.42 + Math.max(0, s) * 0.34;
+      const wristX = elbowX - Math.sin(thetaFore) * 5.6;
+      const wristY = elbowY + Math.cos(thetaFore) * 5.6;
+      return { s, shX, shY, elbowX, elbowY, wristX, wristY, thetaFore };
+    };
+
+    // Exact side-view leg pose: same thigh angle, same knee bend, same foot lift.
+    const sideLegPose = (legPhi: number, isFar: boolean) => {
+      const s = player.moving ? Math.sin(legPhi) : isFar ? -0.14 : 0.14;
+      const c = player.moving ? Math.cos(legPhi) : -1;
+      const hipX = -s * 1.2 + (isFar ? 0.6 : 0);
+      const hipY = -16 + bobY;
+      const thetaThigh = s * 0.68 + Math.max(0, c) * 0.26;
+      const L1 = 7.6;
+      const kneeX = hipX - Math.sin(thetaThigh) * L1;
+      const kneeY = hipY + Math.cos(thetaThigh) * L1;
+      const kneeBend = player.moving
+        ? Math.max(0, Math.cos(legPhi - 0.28)) * 1.08 + (s < 0 ? -s * 0.16 : 0)
+        : 0.05;
+      const thetaCalf = thetaThigh - kneeBend;
+      const L2 = 7.4;
+      const ankleX = kneeX - Math.sin(thetaCalf) * L2;
+      const ankleY = Math.min(-1, kneeY + Math.cos(thetaCalf) * L2);
+      const footAngle = !player.moving
+        ? 0
+        : c > 0.25
+          ? thetaCalf * 0.55
+          : s > 0.45
+            ? 0.32
+            : s < -0.45
+              ? -0.35
+              : 0;
+      return { s, c, hipX, hipY, kneeX, kneeY, ankleX, ankleY, footAngle };
+    };
+
     const drawFrontBackArm = (isLeft: boolean) => {
       const side = isLeft ? -1 : 1;
-      // Both arms wave in graceful counter-phase pendulum arcs using the EXACT same sin(theta)/cos(theta) physics as Side View!
-      const s = player.moving ? (isUp ? -Math.sin(phi) : Math.sin(phi)) : 0;
-      const isFore = side * s >= 0;
-
-      const shX = side * 4.8 + swayX;
-      const shY = -28 + bobY;
-      // True pendulum angle (`thetaUpper`, `thetaFore`): horizontal wave (`Math.sin`) with natural constant arm length (`Math.cos`)
-      // so hands wave smoothly ("melambai") and NEVER pump up and down!
-      const thetaUpper = s * 0.42 + side * 0.22;
-      const elbowX = shX + Math.sin(thetaUpper) * 5.6;
-      const elbowY = shY + Math.cos(thetaUpper) * 5.6;
-
-      const thetaFore = s * 0.56 + side * 0.14;
-      const wristX = elbowX + Math.sin(thetaFore) * 5.2;
-      const wristY = elbowY + Math.cos(thetaFore) * 5.2;
+      const armPhi = isLeft ? phi + Math.PI : phi;
+      const pose = sideArmPose(armPhi, false);
+      const toward = depthSign * -(pose.wristX - pose.shX);
+      const isFore = toward >= 0;
+      const shX = side * 6.05;
+      const elbowX = shX + side * 0.85;
+      const wristX = shX + side * 0.35;
+      // Same swing distance as the side view, turned to face the camera so the wave stays visible beside the body.
+      const elbowY = pose.elbowY + -(pose.elbowX - pose.shX) * 0.9 * depthSign;
+      const wristY = pose.wristY + -(pose.wristX - pose.shX) * 0.9 * depthSign;
 
       drawJointChain(
         [
-          { x: shX, y: shY, r: 2.1 },
-          { x: elbowX, y: elbowY, r: 1.9 },
-          { x: wristX, y: wristY, r: 1.8 },
+          { x: shX, y: pose.shY, r: 2.3 },
+          { x: elbowX, y: elbowY, r: 2.1 },
+          { x: wristX, y: wristY, r: 1.9 },
         ],
         OUT_DARK,
         isFore ? HOOD_MID : HOOD_FAR,
         isFore ? HOOD_HLT : HOOD_MID,
         HOOD_SHD,
-        -side * 0.75,
-        -0.55,
-        1, // Highlight the elbow joint just like in Side View!
+        -side * 0.8,
+        -0.6,
+        1,
       );
 
-      // Outlined 4×4 warm peach hand at the wrist (matching Side View hand!)
-      const hx = Math.round(wristX + Math.sin(thetaFore) * 1.0);
-      const hy = Math.round(wristY + Math.cos(thetaFore) * 1.0);
+      const hx = Math.round(wristX);
+      const hy = Math.round(wristY + Math.cos(pose.thetaFore) * 1.2);
       rectPx(hx - 2, hy - 1, 4, 4, OUT_DARK[0], OUT_DARK[1], OUT_DARK[2]);
       rectPx(
         hx - 1,
@@ -2972,100 +3011,86 @@ function drawFarmerAndOverlays(
       putPx(hx - 1, hy, SKIN_HLT[0], SKIN_HLT[1], SKIN_HLT[2]);
     };
 
-    // 2. Articulated Left & Right Legs with Level Hip Line, Pendulum Stride, and Clean Sneakers
     const drawFrontBackLeg = (isLeft: boolean) => {
       const side = isLeft ? -1 : 1;
       const legPhi = isLeft ? phi : phi + Math.PI;
-      const rawS = player.moving ? Math.sin(legPhi) : 0;
-      const rawC = player.moving ? Math.cos(legPhi) : -1;
-      const s = isUp ? -rawS : rawS;
-      const lift = player.moving ? Math.max(0, rawC) : 0; // Smooth passing-phase knee bend & lift (just like Side View `c > 0`!)
+      const pose = sideLegPose(legPhi, false);
+      const fwdKnee = -(pose.kneeX - pose.hipX);
+      const fwdAnkle = -(pose.ankleX - pose.hipX);
+      const isNearLeg = depthSign * fwdAnkle >= 0;
+      const hipX = side * 3.15;
+      // Knee stays at the side-view height so the hip and back stay upright.
+      const kneeY = pose.kneeY + fwdKnee * 0.12 * depthSign;
+      const ankleY = pose.ankleY + fwdAnkle * 0.78 * depthSign;
 
-      // Both hips start evenly under the hoodie hem (`hipY = -16 + bobY`) so one thigh never pokes up into the stomach!
-      const hipX = side * 3.1 + swayX * 0.4;
-      const hipY = -16.0 + bobY;
-      // Pendulum knee & ankle movement with natural passing lift
-      const thetaLeg = s * 0.22 + side * (0.04 + lift * 0.08);
-      const kneeX = hipX + Math.sin(thetaLeg) * 6.8;
-      const kneeY = hipY + Math.cos(thetaLeg) * 6.8 - lift * 1.6;
-      const ankleX = side * 3.1 + Math.sin(thetaLeg) * 2.2;
-      const ankleY = kneeY + 6.8 - lift * 2.2 + s * 1.2;
-
-      const isNearLeg = s >= 0;
-
-      // Draw Hip -> Knee -> Ankle with continuous 1px outline & bright knee highlight
       drawJointChain(
         [
-          { x: hipX, y: hipY, r: 2.3 },
-          { x: kneeX, y: kneeY, r: 2.1 },
-          { x: ankleX, y: ankleY, r: 1.9 },
+          { x: hipX, y: pose.hipY, r: 2.8 },
+          { x: hipX + side * 0.2, y: kneeY, r: 2.4 },
+          { x: hipX, y: ankleY, r: 2.1 },
         ],
         OUT_DARK,
         isNearLeg ? PANT_NEAR_MID : PANT_FAR_MID,
         isNearLeg ? PANT_NEAR_HLT : PANT_FAR_HLT,
         isNearLeg ? PANT_NEAR_SHD : PANT_FAR_SHD,
-        -side * 0.7,
-        -0.6,
-        1, // Highlight the knee joint just like in Side View!
+        -side * 0.85,
+        -0.4,
+        1,
       );
 
-      // Articulated Sneaker at (ankleX, ankleY)
-      const bx = Math.round(ankleX);
-      const by = Math.round(ankleY);
-      if (lift > 0.45) {
-        // Lifted Foot in passing phase: raised sneaker with white rubber sole rim & tread
-        rectPx(bx - 3, by - 2, 6, 4, OUT_DARK[0], OUT_DARK[1], OUT_DARK[2]);
-        rectPx(bx - 2, by - 1, 4, 2, 238, 244, 252);
-        rectPx(bx - 1, by, 2, 1, 38, 44, 56);
-      } else {
-        // Planted / Striding Foot: full sneaker with crimson tongue/heel-tab, white toe-cap, and bright white rubber sole
-        rectPx(bx - 3, by - 2, 6, 4, OUT_DARK[0], OUT_DARK[1], OUT_DARK[2]);
-        rectPx(bx - 2, by - 1, 4, 2, isNearLeg ? 52 : 38, isNearLeg ? 68 : 50, isNearLeg ? 96 : 74);
-        putPx(bx, by - 1, 186, 42, 54); // Crimson tongue (front) or heel-tab (back)
-        if (!isUp) {
-          rectPx(bx - 2, by, 4, 1, 234, 240, 250); // White toe-cap bumper
+      const pitch = Math.sin(pose.footAngle);
+      for (let uy = 0; uy <= 3; uy += 1) {
+        for (let ux = -2; ux <= 2; ux += 1) {
+          const lift = pitch * (isUp ? 3 - uy : uy) * 0.55;
+          const rx = hipX + ux;
+          const ry = ankleY + uy - lift;
+          const edge = Math.abs(ux) === 2 || uy === 0;
+          if (uy === 3) {
+            putPx(rx, ry, isNearLeg ? 246 : 214, isNearLeg ? 249 : 220, isNearLeg ? 255 : 230);
+          } else if (edge) {
+            putPx(rx, ry, OUT_DARK[0], OUT_DARK[1], OUT_DARK[2]);
+          } else if (uy === 1 && ux === 0) {
+            putPx(rx, ry, 186, 42, 54);
+          } else if (uy === 2 && ux === 0 && !isUp) {
+            putPx(rx, ry, 232, 238, 248);
+          } else {
+            putPx(rx, ry, isNearLeg ? 52 : 34, isNearLeg ? 66 : 44, isNearLeg ? 96 : 68);
+          }
         }
-        // Thick bright white rubber sole at bottom
-        rectPx(bx - 3, by + 1, 6, 1, isNearLeg ? 246 : 210, isNearLeg ? 249 : 216, isNearLeg ? 255 : 228);
       }
     };
 
-    const leftLegNear = (isUp ? -Math.sin(phi) : Math.sin(phi)) >= 0;
+    const legToward = (isLeft: boolean) => {
+      const s = player.moving ? Math.sin(isLeft ? phi : phi + Math.PI) : 0;
+      return isUp ? -s : s;
+    };
+    const armToward = (isLeft: boolean) => {
+      const s = player.moving ? Math.sin(isLeft ? phi + Math.PI : phi) : 0;
+      return isUp ? -s : s;
+    };
+    const farLegLeft = legToward(true) <= legToward(false);
+    const farArmLeft = armToward(true) <= armToward(false);
 
-    // LAYER 1: Far Leg & Near Leg (both drawn cleanly below the hoodie hem so the waist never splits lopsidedly!)
-    drawFrontBackLeg(!leftLegNear);
-    drawFrontBackLeg(leftLegNear);
+    // Far limbs first (the foot and hand stepping away from the camera)
+    drawFrontBackArm(farArmLeft);
+    drawFrontBackLeg(farLegLeft);
 
-    // LAYER 2: Organic Rounded Navy-Blue Hoodie Torso using `drawJointChain` with a level waist hem at gy = -15
+    // Same upright hoodie column as the side view (shoulders at -30, waist at -17). No dropped chest.
     drawJointChain(
       [
-        { x: tx - 2.4, y: -28 + bobY, r: 3.4 },
-        { x: tx + 2.4, y: -28 + bobY, r: 3.4 },
+        { x: tx, y: -30 + bobY, r: 4.6 },
+        { x: tx, y: -23 + bobY, r: 5.0 },
+        { x: tx, y: -17 + bobY, r: 4.6 },
       ],
       OUT_DARK,
       HOOD_MID,
       HOOD_HLT,
       HOOD_SHD,
-      -0.6,
-      -0.7,
+      -0.85,
+      -0.3,
     );
-    drawJointChain(
-      [
-        { x: tx, y: -28 + bobY, r: 5.0 },
-        { x: tx, y: -23 + bobY, r: 4.8 },
-        { x: tx, y: -19 + bobY, r: 4.5 },
-      ],
-      OUT_DARK,
-      HOOD_MID,
-      HOOD_HLT,
-      HOOD_SHD,
-      -0.75,
-      -0.4,
-    );
-    // Level ribbed waist hem seam across bottom of hoodie
     for (let gx = -4; gx <= 4; gx += 1) {
       putPx(tx + gx, -16 + bobY, HOOD_SHD[0], HOOD_SHD[1], HOOD_SHD[2]);
-      putPx(tx + gx, -15 + bobY, OUT_DARK[0], OUT_DARK[1], OUT_DARK[2]);
     }
 
     if (!isUp) {
@@ -3096,9 +3121,9 @@ function drawFarmerAndOverlays(
       );
     }
 
-    // LAYER 3: Both Left & Right Arms swinging with true pendulum wave (`sin/cos`) along the sides of the torso
-    drawFrontBackArm(true);
-    drawFrontBackArm(false);
+    // Near leg steps toward the camera; its opposite arm swings in front of the hoodie
+    drawFrontBackLeg(!farLegLeft);
+    drawFrontBackArm(!farArmLeft);
 
     // LAYER 6: Clean Neck, Head & Multi-Tuft Spiky Crimson-Auburn Hair (matching Side View's exact spiky style!)
     const hy = bobY;
@@ -4009,23 +4034,29 @@ export function VillageGround() {
         if (keys.has("d") || keys.has("arrowright")) moveX += 1;
 
         const isAutoPatrol = moveX === 0 && moveY === 0 && player.idleTimer >= 2.2;
-        const walkSpeed = keys.has("shift") ? 225 : isAutoPatrol ? 98 : 150;
+        const walkSpeed = keys.has("shift") ? 130 : isAutoPatrol ? 54 : 82;
 
         if (moveX !== 0 || moveY !== 0) {
           player.idleTimer = 0;
           const len = Math.hypot(moveX, moveY);
           const nx = moveX / len;
           const ny = moveY / len;
-          const candX = Math.max(48, Math.min(WIDTH - 48, player.x + nx * walkSpeed * dt));
-          const candY = Math.max(56, Math.min(HEIGHT - 48, player.y + ny * walkSpeed * dt));
-          if (cellVal(Math.round(candX) >> 2, Math.round(candY) >> 2) !== 3) {
+          const step = walkSpeed * dt;
+          // Axis-separated collision so vertical walking slides along obstacles.
+          const candX = Math.max(48, Math.min(WIDTH - 48, player.x + nx * step));
+          const candY = Math.max(56, Math.min(HEIGHT - 48, player.y + ny * step));
+          const footCell = (px: number, py: number) =>
+            cellVal(Math.round(px) >> 2, Math.round(py) >> 2);
+          if (footCell(candX, player.y) !== 3) {
             player.x = candX;
+          }
+          if (footCell(player.x, candY) !== 3) {
             player.y = candY;
           }
           // Project a smooth stride target 36px ahead so tapping or holding keys animates legs with the exact same smooth continuity as mouse-click!
           const aheadX = Math.max(48, Math.min(WIDTH - 48, player.x + nx * 36));
           const aheadY = Math.max(56, Math.min(HEIGHT - 48, player.y + ny * 36));
-          if (cellVal(Math.round(aheadX) >> 2, Math.round(aheadY) >> 2) !== 3) {
+          if (footCell(aheadX, aheadY) !== 3) {
             player.target = { x: aheadX, y: aheadY };
           }
           if (moveX > 0) player.facingSign = -1;
@@ -4078,7 +4109,7 @@ export function VillageGround() {
         }
 
         if (player.moving) {
-          const cycleSpeed = keys.has("shift") ? 12.0 : 8.6;
+          const cycleSpeed = keys.has("shift") ? 6.8 : 4.8;
           player.walkCycle = (player.walkCycle + dt * cycleSpeed) % (Math.PI * 2);
           player.stepAccum += dt;
           if (player.stepAccum >= 0.11) {
